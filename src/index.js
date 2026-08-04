@@ -4,6 +4,7 @@ import { loadConfig } from "./config/env.js";
 import { createEmailJob } from "./jobs/emailJob.js";
 import { createGmailService } from "./services/gmailService.js";
 import { ProcessedEmailService } from "./services/processedEmailService.js";
+import { createTelegramService } from "./services/telegramService.js";
 import { logger } from "./utils/logger.js";
 
 const main = async () => {
@@ -22,6 +23,7 @@ const main = async () => {
   const job = createEmailJob({
     gmailService: createGmailService(auth),
     processedService,
+    telegramService: createTelegramService(config.telegram),
     config,
   });
 

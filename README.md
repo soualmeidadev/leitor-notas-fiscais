@@ -56,13 +56,33 @@ Se o Google não mostrar um código diretamente, copie a URL completa para a qua
 npm start
 ```
 
-A primeira verificação acontece imediatamente. Depois disso, `node-cron` segue `EMAIL_CHECK_CRON`. O padrão verifica a cada dois minutos:
+A primeira verificação acontece imediatamente. Depois disso, `node-cron` segue `EMAIL_CHECK_CRON`. O padrão verifica a cada 30 segundos:
 
 ```dotenv
-EMAIL_CHECK_CRON=*/2 * * * *
+EMAIL_CHECK_CRON=*/30 * * * * *
 ```
 
-Exemplos: `*/5 * * * *` executa a cada cinco minutos; `0 * * * *` executa no início de cada hora. Reinicie a aplicação após alterar `.env`.
+O cron aceita seis campos quando há segundos. Exemplos: `0 */5 * * * *` executa a cada cinco minutos; `0 0 * * * *` executa no início de cada hora. Reinicie a aplicação após alterar `.env`.
+
+## Notificações pelo Telegram
+
+A integração envia um aviso e, em seguida, cada XML/PDF fiscal novo como documento. Ela usa diretamente a API HTTPS do Telegram e não requer biblioteca adicional.
+
+1. No Telegram, abra uma conversa com `@BotFather`.
+2. Envie `/newbot`, escolha o nome e o identificador do bot e guarde o token fornecido.
+3. Abra uma conversa privada com o bot criado e envie `/start`.
+4. Consulte `https://api.telegram.org/bot<SEU_TOKEN>/getUpdates` no navegador e procure o valor numérico em `message.chat.id`. Esse é o `TELEGRAM_CHAT_ID`.
+5. Configure o `.env`:
+
+```dotenv
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=token-fornecido-pelo-botfather
+TELEGRAM_CHAT_ID=id-numerico-do-chat
+```
+
+Reinicie com `npm start`. Use um chat privado ou grupo restrito: notas fiscais podem conter dados pessoais e empresariais. O envio usa proteção contra encaminhamento/salvamento oferecida pelo Telegram, mas isso não substitui o controle de acesso ao chat. Nunca compartilhe o token do bot nem o coloque no GitHub.
+
+Se o Telegram estiver indisponível, o erro será registrado no histórico e a leitura do Gmail continuará. Anexos já registrados por SHA-256 não serão reenviados.
 
 ## Como funciona
 

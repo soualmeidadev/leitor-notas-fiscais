@@ -17,7 +17,7 @@ const safeDate = (value) => {
   return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
 };
 
-export const createEmailJob = ({ gmailService, processedService, config }) => {
+export const createEmailJob = ({ gmailService, processedService, telegramService, config }) => {
   let running = false;
 
   const run = async () => {
@@ -101,7 +101,15 @@ export const createEmailJob = ({ gmailService, processedService, config }) => {
         ? `XML fiscal confirmado${type ? ` (${type})` : ""}`
         : classification.reasons.join(", ");
       logger.fiscal(`${email.subject} — score ${classification.score}`);
-      await processedService.add(buildRecord(email, "PROCESSED", classification.score, reason, downloaded));
+      const notification = await notifyTelegram(telegramService, email, downloaded);
+      await processedService.add(buildRecord(
+        email,
+        "PROCESSED",
+        classification.score,
+        reason,
+        downloaded,
+        notification,
+      ));
     } catch (error) {
       logger.error(`Falha ao processar mensagem ${messageId}: ${error.message}`);
       try {
@@ -113,6 +121,7 @@ export const createEmailJob = ({ gmailService, processedService, config }) => {
           score: classification.score,
           reason: error.message,
           attachments: downloaded,
+          notification: null,
         });
       } catch (writeError) {
         logger.error(`Falha ao registrar erro da mensagem ${messageId}: ${writeError.message}`);
@@ -123,7 +132,21 @@ export const createEmailJob = ({ gmailService, processedService, config }) => {
   return { run };
 };
 
-const buildRecord = (email, status, score, reason, attachments) => ({
+const notifyTelegram = async (telegramService, email, attachments) => {
+  if (!telegramService.enabled || attachments.length === 0) {
+    return { status: telegramService.enabled ? "NO_NEW_ATTACHMENTS" : "DISABLED", sentDocuments: 0 };
+  }
+  try {
+    const result = await telegramService.notifyFiscalEmail(email, attachments);
+    logger.info(`${result.sentDocuments} documento(s) enviado(s) ao Telegram`);
+    return result;
+  } catch (error) {
+    logger.error(`Falha ao enviar notificação ao Telegram: ${error.message}`);
+    return { status: "ERROR", sentDocuments: 0, error: error.message };
+  }
+};
+
+const buildRecord = (email, status, score, reason, attachments, notification = null) => ({
   messageId: email.id,
   threadId: email.threadId,
   processedAt: new Date().toISOString(),
@@ -131,4 +154,5 @@ const buildRecord = (email, status, score, reason, attachments) => ({
   score,
   reason,
   attachments,
+  notification,
 });
