@@ -53,6 +53,7 @@ export const createEmailJob = ({ gmailService, processedService, telegramService
     let email;
     let classification = { score: 0, reasons: [] };
     const downloaded = [];
+    const telegramAttachments = [];
     try {
       email = parseEmail(await gmailService.getMessage(messageId));
       classification = classifyEmail(email);
@@ -76,8 +77,17 @@ export const createEmailJob = ({ gmailService, processedService, telegramService
       for (const item of inspected) {
         const fiscalAttachment = item.xmlAnalysis?.fiscal
           || (isFiscalFilename(item.attachment.filename) && isAccepted(item.attachment));
-        const duplicateInMessage = downloaded.some((attachment) => attachment.sha256 === item.sha256);
-        if (!fiscalAttachment || duplicateInMessage || processedService.hasHash(item.sha256)) continue;
+        const duplicateInMessage = telegramAttachments.some((attachment) => attachment.sha256 === item.sha256);
+        if (!fiscalAttachment || duplicateInMessage) continue;
+
+        if (processedService.hasHash(item.sha256)) {
+          const existing = processedService.findAttachmentByHash(item.sha256);
+          if (telegramService.enabled && existing?.path
+            && !processedService.wasHashSentToTelegram(item.sha256)) {
+            telegramAttachments.push(existing);
+          }
+          continue;
+        }
 
         const savedPath = await saveAttachment({
           buffer: item.buffer,
@@ -93,6 +103,7 @@ export const createEmailJob = ({ gmailService, processedService, telegramService
           sha256: item.sha256,
           fiscalXml: item.xmlAnalysis?.fiscal ? item.xmlAnalysis : undefined,
         });
+        telegramAttachments.push(downloaded.at(-1));
         logger.downloaded(path.basename(savedPath));
       }
 
@@ -101,7 +112,7 @@ export const createEmailJob = ({ gmailService, processedService, telegramService
         ? `XML fiscal confirmado${type ? ` (${type})` : ""}`
         : classification.reasons.join(", ");
       logger.fiscal(`${email.subject} — score ${classification.score}`);
-      const notification = await notifyTelegram(telegramService, email, downloaded);
+      const notification = await notifyTelegram(telegramService, email, telegramAttachments);
       await processedService.add(buildRecord(
         email,
         "PROCESSED",
@@ -138,6 +149,7 @@ const notifyTelegram = async (telegramService, email, attachments) => {
   }
   try {
     const result = await telegramService.notifyFiscalEmail(email, attachments);
+    result.attachmentHashes = attachments.map((attachment) => attachment.sha256);
     logger.info(`${result.sentDocuments} documento(s) enviado(s) ao Telegram`);
     return result;
   } catch (error) {

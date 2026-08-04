@@ -28,6 +28,33 @@ export class ProcessedEmailService {
     return this.records.some((record) => record.attachments?.some((item) => item.sha256 === sha256));
   }
 
+  findAttachmentByHash(sha256) {
+    for (const record of this.records) {
+      const attachment = record.attachments?.find((item) => item.sha256 === sha256);
+      if (attachment) return attachment;
+    }
+    return null;
+  }
+
+  wasHashSentToTelegram(sha256) {
+    return this.records.some((record) => record.notification?.status === "SENT"
+      && (record.notification.attachmentHashes?.includes(sha256)
+        || record.attachments?.some((item) => item.sha256 === sha256)));
+  }
+
+  async updateNotification(messageId, notification) {
+    const record = this.records.find((item) => item.messageId === messageId);
+    if (!record) throw new Error(`Mensagem ${messageId} não encontrada no histórico`);
+    const previous = record.notification;
+    record.notification = notification;
+    try {
+      await this.save();
+    } catch (error) {
+      record.notification = previous;
+      throw error;
+    }
+  }
+
   async add(record) {
     this.records.push(record);
     try {
