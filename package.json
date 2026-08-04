@@ -1,0 +1,22 @@
+{
+  "name": "leitor-notas-fiscais",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Monitor de e-mails do Gmail para identificar e baixar documentos fiscais.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "authorize": "node src/scripts/authorizeGmail.js",
+    "check": "node --check src/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "fast-xml-parser": "^5.0.8",
+    "googleapis": "^174.0.0",
+    "node-cron": "^4.6.0"
+  }
+}

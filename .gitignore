@@ -1,0 +1,8 @@
+node_modules/
+.env
+credentials.json
+tokens/
+downloads/*
+!downloads/.gitkeep
+data/processed-emails.json
+*.log
