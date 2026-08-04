@@ -8,6 +8,33 @@ const truncate = (value, length) => {
   return text.length > length ? `${text.slice(0, length - 1)}…` : text;
 };
 
+const parseSender = (from) => {
+  const value = String(from ?? "").trim();
+  const match = value.match(/^\s*"?([^"<]*)"?\s*<([^>]+)>\s*$/);
+  if (match) {
+    return { name: match[1].trim(), email: match[2].trim() };
+  }
+  if (/^[^\s@]+@[^\s@]+$/.test(value)) return { name: "", email: value };
+  return { name: value, email: "" };
+};
+
+const formatCurrency = (value) => {
+  if (value === null || value === undefined || value === "") return "";
+  const number = Number(String(value).replace(",", "."));
+  if (!Number.isFinite(number)) return truncate(value, 60);
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(number);
+};
+
+const formatDate = (value) => {
+  if (!value) return "";
+  const text = String(value);
+  const isoDate = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoDate) return `${isoDate[3]}/${isoDate[2]}/${isoDate[1]}`;
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return truncate(value, 60);
+  return new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" }).format(date);
+};
+
 const requestTelegram = async (url, options, attempts = 3) => {
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -34,17 +61,18 @@ const requestTelegram = async (url, options, attempts = 3) => {
 
 const buildNotice = (email, attachments) => {
   const fiscalXml = attachments.find((item) => item.fiscalXml)?.fiscalXml;
-  const lines = [
-    "🧾 Nova nota fiscal recebida",
-    "",
-    `Assunto: ${truncate(email.subject, 180)}`,
-    `Remetente: ${truncate(email.from, 160) || "não informado"}`,
-    `Data: ${truncate(email.date, 80) || "não informada"}`,
-    `Tipo: ${fiscalXml?.type ?? "documento fiscal"}`,
-  ];
-  if (fiscalXml?.invoiceNumber) lines.push(`Número: ${truncate(fiscalXml.invoiceNumber, 60)}`);
-  if (fiscalXml?.totalValue) lines.push(`Valor informado: ${truncate(fiscalXml.totalValue, 60)}`);
-  lines.push(`Anexos: ${attachments.length}`);
+  const sender = parseSender(email.from);
+  const lines = ["🧾 Nova nota fiscal", ""];
+  if (sender.name) lines.push(`🏢 Remetente: ${truncate(sender.name, 140)}`);
+  if (sender.email) lines.push(`📧 ${truncate(sender.email, 160)}`);
+  if (fiscalXml?.type && fiscalXml.type !== "UNKNOWN") lines.push(`📄 Tipo: ${fiscalXml.type.replace("NFE", "NF-e").replace("NFSE", "NFS-e").replace("CTE", "CT-e")}`);
+  if (fiscalXml?.invoiceNumber) lines.push(`🔢 Número: ${truncate(fiscalXml.invoiceNumber, 60)}`);
+  if (fiscalXml?.totalValue) lines.push(`💰 Valor: ${formatCurrency(fiscalXml.totalValue)}`);
+  if (fiscalXml?.issueDate) lines.push(`📅 Emissão: ${formatDate(fiscalXml.issueDate)}`);
+  if (attachments.length) {
+    lines.push("");
+    for (const attachment of attachments) lines.push(`📎 ${truncate(attachment.filename, 160)}`);
+  }
   return lines.join("\n");
 };
 
