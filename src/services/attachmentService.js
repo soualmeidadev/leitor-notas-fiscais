@@ -3,12 +3,15 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { decodeBase64Url, sanitizeFilename } from "../utils/text.js";
 
-export const getAttachmentBuffer = async (gmailService, messageId, attachment) => {
+export const getAttachmentBuffer = async (gmailService, messageId, attachment, maxBytes = Infinity) => {
+  if (attachment.size > maxBytes) throw new Error(`Anexo excede o limite de ${maxBytes} bytes`);
   const encoded = attachment.attachmentId
     ? await gmailService.getAttachment(messageId, attachment.attachmentId)
     : attachment.inlineData;
   if (!encoded) throw new Error(`Anexo ${sanitizeFilename(attachment.filename)} sem conteúdo`);
-  return decodeBase64Url(encoded);
+  const buffer = decodeBase64Url(encoded);
+  if (buffer.length > maxBytes) throw new Error(`Anexo excede o limite de ${maxBytes} bytes`);
+  return buffer;
 };
 
 export const hashBuffer = (buffer) => crypto.createHash("sha256").update(buffer).digest("hex");

@@ -13,7 +13,7 @@ const withRetry = async (operation, attempts = 4) => {
       lastError = error;
       const status = error.response?.status ?? error.code;
       if (!TEMPORARY_STATUS.has(Number(status)) || attempt === attempts - 1) throw error;
-      await sleep(Math.min(1_000 * (2 ** attempt), 8_000));
+      await sleep(Math.min(1_000 * (2 ** attempt), 8_000) + Math.floor(Math.random() * 250));
     }
   }
   throw lastError;
@@ -32,7 +32,7 @@ export const createGmailService = (auth) => {
           q: query,
           maxResults: Math.min(maxResults, 500),
           pageToken,
-        }));
+        }, { timeout: 30_000 }));
         messages.push(...(response.data.messages ?? []));
         pageToken = response.data.nextPageToken;
       } while (pageToken);
@@ -44,7 +44,7 @@ export const createGmailService = (auth) => {
         userId: "me",
         id: messageId,
         format: "full",
-      }));
+      }, { timeout: 30_000 }));
       return response.data;
     },
 
@@ -53,7 +53,7 @@ export const createGmailService = (auth) => {
         userId: "me",
         messageId,
         id: attachmentId,
-      }));
+      }, { timeout: 30_000 }));
       return response.data.data;
     },
   };

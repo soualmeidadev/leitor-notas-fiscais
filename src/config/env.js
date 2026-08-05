@@ -15,10 +15,25 @@ const positiveInteger = (name, fallback) => {
   return value;
 };
 
+const nonNegativeInteger = (name, fallback) => {
+  const value = Number(required(name, fallback));
+  if (!Number.isInteger(value) || value < 0) throw new Error(`${name} deve ser um inteiro não negativo`);
+  return value;
+};
+
 const booleanValue = (name, fallback = "false") => {
   const value = required(name, fallback).toLowerCase();
   if (!["true", "false"].includes(value)) throw new Error(`${name} deve ser true ou false`);
   return value === "true";
+};
+
+const jsonObject = (name, fallback = "{}") => {
+  try {
+    const value = JSON.parse(process.env[name] ?? fallback);
+    if (!value || Array.isArray(value) || typeof value !== "object") throw new Error("não é objeto");
+    for (const weight of Object.values(value)) if (!Number.isFinite(weight) || weight < 0) throw new Error("peso inválido");
+    return value;
+  } catch (error) { throw new Error(`${name} deve ser um objeto JSON com pesos não negativos`); }
 };
 
 export const loadConfig = () => {
@@ -36,7 +51,20 @@ export const loadConfig = () => {
     gmailMaxResults: positiveInteger("GMAIL_MAX_RESULTS", "100"),
     emailCheckCron: required("EMAIL_CHECK_CRON", "*/30 * * * * *"),
     downloadDir: path.resolve(required("DOWNLOAD_DIR", "downloads")),
-    processedEmailsFile: path.resolve(required("PROCESSED_EMAILS_FILE", "data/processed-emails.json")),
+    databasePath: path.resolve(required("DATABASE_PATH", "data/automation.sqlite")),
+    legacyProcessedEmailsFile: path.resolve(required("PROCESSED_EMAILS_FILE", "data/processed-emails.json")),
+    maxAttachmentBytes: positiveInteger("MAX_ATTACHMENT_BYTES", "26214400"),
+    processingMaxAttempts: positiveInteger("PROCESSING_MAX_ATTEMPTS", "5"),
+    telegramMaxAttempts: positiveInteger("TELEGRAM_MAX_ATTEMPTS", "8"),
+    retryBaseDelayMs: positiveInteger("RETRY_BASE_DELAY_MS", "60000"),
+    attachmentRetentionDays: nonNegativeInteger("ATTACHMENT_RETENTION_DAYS", "0"),
+    jobTimeoutMs: positiveInteger("JOB_TIMEOUT_MS", "300000"),
+    healthPort: nonNegativeInteger("HEALTH_PORT", "3000"),
+    logFormat: required("LOG_FORMAT", "json"),
+    classification: {
+      threshold: positiveInteger("CLASSIFICATION_THRESHOLD", "60"),
+      weights: jsonObject("CLASSIFICATION_WEIGHTS_JSON"),
+    },
     telegram: {
       enabled: telegramEnabled,
       botToken: telegramBotToken,

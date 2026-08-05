@@ -6,6 +6,8 @@ export const GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.reado
 
 const readJson = async (filePath, label) => {
   try {
+    const stat = await fs.stat(filePath);
+    if ((stat.mode & 0o077) !== 0) await fs.chmod(filePath, 0o600);
     return JSON.parse(await fs.readFile(filePath, "utf8"));
   } catch (error) {
     if (error.code === "ENOENT") {

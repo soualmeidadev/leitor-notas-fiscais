@@ -11,9 +11,11 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "authorize": "node src/scripts/authorizeGmail.js",
-    "check": "node --check src/index.js"
+    "check": "find src test -name '*.js' -print0 | xargs -0 -n1 node --check",
+    "test": "node --test"
   },
   "dependencies": {
+    "better-sqlite3": "^12.4.1",
     "dotenv": "^16.4.7",
     "fast-xml-parser": "^5.0.8",
     "googleapis": "^174.0.0",
