@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import path from "node:path";
 import { getAttachmentBuffer, hashBuffer, saveAttachment } from "../services/attachmentService.js";
 import { classifyEmail, isFiscalFilename } from "../services/emailClassifier.js";
@@ -5,166 +6,135 @@ import { parseEmail } from "../services/emailParser.js";
 import { analyzeFiscalXml } from "../services/fiscalXmlService.js";
 import { logger } from "../utils/logger.js";
 
-const isAccepted = (attachment) => [".xml", ".pdf"].includes(
-  path.extname(attachment.filename).toLowerCase(),
-) || /^(?:application|text)\/xml/i.test(attachment.mimeType)
-  || attachment.mimeType === "application/pdf";
+const isAccepted = (attachment) => [".xml", ".pdf"].includes(path.extname(attachment.filename).toLowerCase())
+  || /^(?:application|text)\/xml/i.test(attachment.mimeType) || attachment.mimeType === "application/pdf";
 const isXml = (attachment) => path.extname(attachment.filename).toLowerCase() === ".xml"
   || /(?:application|text)\/xml/i.test(attachment.mimeType);
-
-const safeDate = (value) => {
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
-};
+const safeDate = (value) => Number.isNaN(new Date(value).getTime()) ? new Date() : new Date(value);
 
 export const createEmailJob = ({ gmailService, processedService, telegramService, config }) => {
   let running = false;
+  let stopping = false;
+  const owner = `${process.pid}-${crypto.randomUUID()}`;
+  const state = { running: false, lastStartedAt: null, lastSuccessAt: null, lastError: null, processed: 0 };
 
-  const run = async () => {
-    if (running) {
-      logger.warn("Verificação anterior ainda em execução; nova execução ignorada");
-      return;
-    }
-    running = true;
-    logger.info("Iniciando verificação do Gmail");
-
-    try {
-      const messageRefs = await gmailService.listMessageIds({
-        query: config.gmailQuery,
-        maxResults: config.gmailMaxResults,
-      });
-      logger.info(`${messageRefs.length} mensagens candidatas encontradas`);
-
-      for (const reference of messageRefs) {
-        if (processedService.hasMessage(reference.id)) {
-          logger.info(`Mensagem ${reference.id} já processada; ignorada`);
-          continue;
+  const processTelegramQueue = async () => {
+    if (!telegramService.enabled) return;
+    const blocked = new Set();
+    for (const item of processedService.getPendingTelegram()) {
+      if (blocked.has(item.message_id)) continue;
+      try {
+        if (item.kind === "NOTICE") {
+          const attachments = processedService.getMessageAttachments(item.message_id);
+          await telegramService.sendNotice({ subject: item.subject, from: item.sender, date: item.email_date }, attachments);
+        } else {
+          if (!item.path) throw new Error("Arquivo do anexo não está mais disponível");
+          await telegramService.sendDocument({ filename: item.filename, path: item.path, mimeType: item.mime_type, fiscalXml: item.fiscalXml });
         }
-        await processMessage(reference.id);
+        processedService.markTelegramSent(item.id);
+      } catch (error) {
+        processedService.markTelegramFailed(item.id, error.message, {
+          maxAttempts: config.telegramMaxAttempts, baseDelayMs: config.retryBaseDelayMs,
+        });
+        blocked.add(item.message_id);
+        logger.error("Falha em item da fila do Telegram", { messageId: item.message_id, kind: item.kind, error: error.message });
       }
-    } catch (error) {
-      logger.error(`Falha na verificação do Gmail: ${error.message}`);
-    } finally {
-      running = false;
     }
   };
 
   const processMessage = async (messageId) => {
     let email;
     let classification = { score: 0, reasons: [] };
-    const downloaded = [];
-    const telegramAttachments = [];
+    const saved = [];
     try {
       email = parseEmail(await gmailService.getMessage(messageId));
-      classification = classifyEmail(email);
+      classification = classifyEmail(email, config.classification);
       const inspected = [];
       let confirmedXml = false;
-
       for (const attachment of email.attachments.filter(isAccepted)) {
-        const buffer = await getAttachmentBuffer(gmailService, email.id, attachment);
+        const buffer = await getAttachmentBuffer(gmailService, email.id, attachment, config.maxAttachmentBytes);
         const xmlAnalysis = isXml(attachment) ? analyzeFiscalXml(buffer) : null;
         if (xmlAnalysis?.fiscal) confirmedXml = true;
         inspected.push({ attachment, buffer, xmlAnalysis, sha256: hashBuffer(buffer) });
       }
 
       if (!classification.fiscal && !confirmedXml) {
-        const reason = classification.reasons.join(", ") || "sem sinais fiscais suficientes";
-        logger.ignored(`${email.subject} — score ${classification.score}`);
-        await processedService.add(buildRecord(email, "IGNORED", classification.score, reason, []));
+        await processedService.add(buildRecord(email, "IGNORED", classification, [], 0));
+        logger.ignored("Mensagem sem sinais fiscais suficientes", { messageId, score: classification.score });
         return;
       }
 
+      const selected = [];
       for (const item of inspected) {
-        const fiscalAttachment = item.xmlAnalysis?.fiscal
-          || (isFiscalFilename(item.attachment.filename) && isAccepted(item.attachment));
-        const duplicateInMessage = telegramAttachments.some((attachment) => attachment.sha256 === item.sha256);
-        if (!fiscalAttachment || duplicateInMessage) continue;
-
-        if (processedService.hasHash(item.sha256)) {
-          const existing = processedService.findAttachmentByHash(item.sha256);
-          if (telegramService.enabled && existing?.path
-            && !processedService.wasHashSentToTelegram(item.sha256)) {
-            telegramAttachments.push(existing);
-          }
-          continue;
+        if (!(item.xmlAnalysis?.fiscal || isFiscalFilename(item.attachment.filename))) continue;
+        if (selected.some((candidate) => candidate.sha256 === item.sha256)) continue;
+        const existing = processedService.findAttachmentByHash(item.sha256);
+        if (existing) {
+          if (existing.path) { selected.push(existing); continue; }
         }
-
-        const savedPath = await saveAttachment({
-          buffer: item.buffer,
-          downloadDir: config.downloadDir,
-          messageId: email.id,
-          filename: item.attachment.filename,
-          date: safeDate(email.date),
-        });
-        downloaded.push({
-          filename: path.basename(savedPath),
-          path: savedPath,
-          mimeType: item.attachment.mimeType,
-          sha256: item.sha256,
-          fiscalXml: item.xmlAnalysis?.fiscal ? item.xmlAnalysis : undefined,
-        });
-        telegramAttachments.push(downloaded.at(-1));
-        logger.downloaded(path.basename(savedPath));
+        const savedPath = await saveAttachment({ buffer: item.buffer, downloadDir: config.downloadDir,
+          messageId: email.id, filename: item.attachment.filename, date: safeDate(email.date) });
+        const attachment = { filename: path.basename(savedPath), path: savedPath,
+          mimeType: item.attachment.mimeType, sha256: item.sha256,
+          fiscalXml: item.xmlAnalysis?.fiscal ? item.xmlAnalysis : undefined };
+        saved.push(attachment); selected.push(attachment);
+        logger.downloaded("Documento fiscal salvo", { messageId, filename: attachment.filename, sha256: item.sha256 });
       }
 
+      if (selected.length === 0) {
+        await processedService.add(buildRecord(email, "IGNORED", classification, [], 0, "classificado, mas sem anexo fiscal aceito"));
+        logger.warn("Mensagem fiscal sem anexo fiscal aceito", { messageId, score: classification.score });
+        return;
+      }
       const type = inspected.find((item) => item.xmlAnalysis?.fiscal)?.xmlAnalysis.type;
-      const reason = confirmedXml
-        ? `XML fiscal confirmado${type ? ` (${type})` : ""}`
-        : classification.reasons.join(", ");
-      logger.fiscal(`${email.subject} — score ${classification.score}`);
-      const notification = await notifyTelegram(telegramService, email, telegramAttachments);
-      await processedService.add(buildRecord(
-        email,
-        "PROCESSED",
-        classification.score,
-        reason,
-        downloaded,
-        notification,
-      ));
+      await processedService.add(buildRecord(email, "PROCESSED", classification, selected, 0,
+        confirmedXml ? `XML fiscal confirmado${type ? ` (${type})` : ""}` : undefined));
+      if (telegramService.enabled) processedService.enqueueTelegram(email.id, selected.map((item) => item.sha256));
+      state.processed += 1;
+      logger.fiscal("Mensagem fiscal processada", { messageId, score: classification.score, attachments: selected.length });
     } catch (error) {
-      logger.error(`Falha ao processar mensagem ${messageId}: ${error.message}`);
-      try {
-        await processedService.add({
-          messageId,
-          threadId: email?.threadId ?? null,
-          processedAt: new Date().toISOString(),
-          status: "ERROR",
-          score: classification.score,
-          reason: error.message,
-          attachments: downloaded,
-          notification: null,
-        });
-      } catch (writeError) {
-        logger.error(`Falha ao registrar erro da mensagem ${messageId}: ${writeError.message}`);
-      }
+      const outcome = await processedService.recordError({ messageId, threadId: email?.threadId ?? null,
+        processedAt: new Date().toISOString(), score: classification.score, reason: error.message,
+        attachments: saved, subject: email?.subject, sender: email?.from, emailDate: email?.date },
+      { maxAttempts: config.processingMaxAttempts, baseDelayMs: config.retryBaseDelayMs });
+      logger.error("Falha ao processar mensagem", { messageId, attempt: outcome.attempts,
+        terminal: outcome.terminal, error: error.message });
     }
   };
 
-  return { run };
+  const run = async () => {
+    if (running || stopping) return;
+    if (!processedService.acquireLease("email-job", owner, config.jobTimeoutMs + 60_000)) {
+      logger.warn("Outra instância mantém o lock da verificação"); return;
+    }
+    running = true; state.running = true; state.lastStartedAt = new Date().toISOString();
+    const deadline = Date.now() + config.jobTimeoutMs;
+    try {
+      const listed = await gmailService.listMessageIds({ query: config.gmailQuery, maxResults: config.gmailMaxResults });
+      const ids = [...new Set([...processedService.getDueRetryMessageIds(), ...listed.map((item) => item.id)])];
+      for (const messageId of ids) {
+        if (stopping || Date.now() >= deadline) throw new Error("Tempo máximo da verificação excedido");
+        if (!processedService.hasMessage(messageId)) await processMessage(messageId);
+      }
+      await processTelegramQueue();
+      const removed = await processedService.cleanupAttachments(config.attachmentRetentionDays);
+      if (removed) logger.info("Retenção removeu anexos antigos", { removed });
+      state.lastSuccessAt = new Date().toISOString(); state.lastError = null;
+    } catch (error) {
+      state.lastError = error.message;
+      logger.error("Falha na verificação do Gmail", { error: error.message });
+    } finally {
+      running = false; state.running = false;
+      processedService.releaseLease("email-job", owner);
+    }
+  };
+
+  return { run, stop: () => { stopping = true; }, isRunning: () => running,
+    getHealth: () => ({ ...state, stats: processedService.getStats() }) };
 };
 
-const notifyTelegram = async (telegramService, email, attachments) => {
-  if (!telegramService.enabled || attachments.length === 0) {
-    return { status: telegramService.enabled ? "NO_NEW_ATTACHMENTS" : "DISABLED", sentDocuments: 0 };
-  }
-  try {
-    const result = await telegramService.notifyFiscalEmail(email, attachments);
-    result.attachmentHashes = attachments.map((attachment) => attachment.sha256);
-    logger.info(`${result.sentDocuments} documento(s) enviado(s) ao Telegram`);
-    return result;
-  } catch (error) {
-    logger.error(`Falha ao enviar notificação ao Telegram: ${error.message}`);
-    return { status: "ERROR", sentDocuments: 0, error: error.message };
-  }
-};
-
-const buildRecord = (email, status, score, reason, attachments, notification = null) => ({
-  messageId: email.id,
-  threadId: email.threadId,
-  processedAt: new Date().toISOString(),
-  status,
-  score,
-  reason,
-  attachments,
-  notification,
+const buildRecord = (email, status, classification, attachments, attempts, reason) => ({
+  messageId: email.id, threadId: email.threadId, processedAt: new Date().toISOString(), status,
+  score: classification.score, reason: reason ?? classification.reasons.join(", "), attachments,
+  attempts, nextRetryAt: null, subject: email.subject, sender: email.from, emailDate: email.date,
 });

@@ -53,7 +53,7 @@ const requestTelegram = async (url, options, attempts = 3) => {
         || error.name === "TypeError";
       if (!temporary || attempt === attempts - 1) throw error;
       const delay = error.retryAfter ? error.retryAfter * 1_000 : 1_000 * (2 ** attempt);
-      await sleep(Math.min(delay, 10_000));
+      await sleep(Math.min(delay, 10_000) + Math.floor(Math.random() * 250));
     }
   }
   throw lastError;
@@ -78,14 +78,14 @@ const buildNotice = (email, attachments) => {
 
 export const createTelegramService = ({ enabled, botToken, chatId }) => {
   if (!enabled) {
-    return { enabled: false, notifyFiscalEmail: async () => ({ status: "DISABLED", sentDocuments: 0 }) };
+    return { enabled: false, sendNotice: async () => {}, sendDocument: async () => {} };
   }
 
   const endpoint = (method) => `https://api.telegram.org/bot${botToken}/${method}`;
 
   return {
     enabled: true,
-    async notifyFiscalEmail(email, attachments) {
+    async sendNotice(email, attachments) {
       await requestTelegram(endpoint("sendMessage"), {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -95,19 +95,14 @@ export const createTelegramService = ({ enabled, botToken, chatId }) => {
           protect_content: true,
         }),
       });
-
-      let sentDocuments = 0;
-      for (const attachment of attachments) {
-        const buffer = await fs.readFile(attachment.path);
-        const form = new FormData();
-        form.append("chat_id", chatId);
-        form.append("protect_content", "true");
-        form.append("document", new Blob([buffer], { type: attachment.mimeType }), attachment.filename);
-        await requestTelegram(endpoint("sendDocument"), { method: "POST", body: form });
-        sentDocuments += 1;
-      }
-
-      return { status: "SENT", sentDocuments, sentAt: new Date().toISOString() };
+    },
+    async sendDocument(attachment) {
+      const buffer = await fs.readFile(attachment.path);
+      const form = new FormData();
+      form.append("chat_id", chatId);
+      form.append("protect_content", "true");
+      form.append("document", new Blob([buffer], { type: attachment.mimeType }), attachment.filename);
+      await requestTelegram(endpoint("sendDocument"), { method: "POST", body: form });
     },
   };
 };

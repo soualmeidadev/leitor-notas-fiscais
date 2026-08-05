@@ -94,7 +94,39 @@ Os arquivos ficam organizados por data do e-mail:
 downloads/ANO/MÊS/ID-DA-MENSAGEM/arquivo.xml
 ```
 
-Mensagens processadas ficam registradas em `data/processed-emails.json`. Hashes SHA-256 impedem que um anexo já registrado seja salvo novamente. Registros com `ERROR` também são considerados vistos; remova manualmente apenas o registro específico se quiser tentar aquela mensagem de novo.
+Mensagens, anexos, tentativas e notificações ficam registrados em SQLite, por padrão em
+`data/automation.sqlite`. Hashes SHA-256 impedem que um anexo já registrado seja salvo novamente.
+Falhas são repetidas automaticamente com backoff, mesmo depois que a mensagem sai da janela da
+consulta do Gmail. Depois do limite de tentativas, o item recebe o status `DEAD_LETTER`.
+
+Na primeira inicialização com um histórico antigo, `data/processed-emails.json` é importado e
+renomeado para `processed-emails.json.migrated`. O Telegram usa uma fila durável: o aviso e cada
+documento têm status independente, portanto uma falha parcial repete somente os itens pendentes.
+
+## Saúde, métricas e operação
+
+Com `HEALTH_PORT=3000`, a aplicação expõe `GET /health` (HTTP 200/503) e `GET /metrics` no formato
+Prometheus. Os logs são JSON por padrão; use `LOG_FORMAT=text` para o formato legível. `SIGTERM` e
+`SIGINT` encerram o cron e aguardam o ciclo atual. Um lease no SQLite impede ciclos simultâneos.
+
+```dotenv
+DATABASE_PATH=data/automation.sqlite
+MAX_ATTACHMENT_BYTES=26214400
+PROCESSING_MAX_ATTEMPTS=5
+TELEGRAM_MAX_ATTEMPTS=8
+RETRY_BASE_DELAY_MS=60000
+ATTACHMENT_RETENTION_DAYS=0
+JOB_TIMEOUT_MS=300000
+HEALTH_PORT=3000
+LOG_FORMAT=json
+CLASSIFICATION_THRESHOLD=60
+CLASSIFICATION_WEIGHTS_JSON={}
+```
+
+Retenção igual a zero desativa a limpeza. Arquivos com envio pendente nunca são removidos. As
+permissões das credenciais e do token são automaticamente restringidas a `0600` quando possível.
+Os pesos aceitos em `CLASSIFICATION_WEIGHTS_JSON` são `subjectTerm`, `subjectAcronym`, `bodyTerm`,
+`accessKey`, `xml`, `pdf` e `fiscalFilename`; os valores ausentes preservam os padrões.
 
 ## Teste com e-mails de exemplo
 
@@ -103,6 +135,8 @@ Mensagens processadas ficam registradas em `data/processed-emails.json`. Hashes 
 3. Execute `npm start` e confira os logs e a pasta `downloads/`.
 4. Reinicie o processo: as mesmas mensagens devem ser reconhecidas como já processadas.
 
+Execute também `npm test` e `npm run check`.
+
 Use somente documentos fictícios ou de homologação no desenvolvimento. O projeto não inclui OCR: PDFs são identificados pelo contexto e pelo nome do arquivo.
 
 ## Execução futura em uma VPS
@@ -110,7 +144,7 @@ Use somente documentos fictícios ou de homologação no desenvolvimento. O proj
 1. Instale Node.js 20+ e copie/clone o projeto.
 2. Execute `npm ci --omit=dev`.
 3. Transfira `.env`, `credentials.json` e `tokens/token.json` por um canal seguro; restrinja suas permissões no sistema operacional.
-4. Garanta persistência e backup seguro para `data/` e `downloads/`.
+4. Garanta persistência e backup seguro para `data/` e `downloads/`, incluindo o SQLite e seu WAL.
 5. Execute `npm start` com um gerenciador de processos como systemd ou PM2, configurando reinício automático.
 6. Proteja a VPS, limite o acesso aos documentos e monitore espaço em disco e logs.
 
@@ -135,5 +169,6 @@ Não faça commit de credenciais, tokens, notas fiscais reais ou dados pessoais.
 npm run authorize  # cria/atualiza o token OAuth
 npm start          # inicia o monitor
 npm run dev        # inicia com reinício automático em alterações
-npm run check      # verifica a sintaxe do ponto de entrada
+npm run check      # verifica a sintaxe do código e dos testes
+npm test           # executa os testes automatizados
 ```
